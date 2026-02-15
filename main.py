@@ -5,16 +5,49 @@ from datetime import datetime, timedelta
 import uuid
 import os
 from base64 import b64decode
+import http.server
+import socketserver
+from threading import Thread
 
 # ───────────────────────────────────────────────
-# CONFIG
+# CONFIGURATION
 # ───────────────────────────────────────────────
 
 CHAT_PASS = os.environ.get("CHAT_PASS", "default-insecure-123-change-me")
 ADMIN_PASSWORD = os.environ.get("CHAT_ADMIN_PASS", "admin-secret-2025")
 
-HOST = "0.0.0.0"
+# Use Render-provided PORT or fallback to 10000 for local testing
 PORT = int(os.environ.get("PORT", 10000))
+HOST = "0.0.0.0"
+
+# ───────────────────────────────────────────────
+# Simple HTTP health-check server (for Render probes)
+# ───────────────────────────────────────────────
+
+class HealthHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ('/', '/health', '/healthz', '/ready'):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK\n")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_HEAD(self):
+        self.do_GET()  # HEAD should return same headers, no body
+
+    def log_message(self, format, *args):
+        # Silence health check logs (optional - comment out to see them)
+        return
+
+
+def run_http_health_server():
+    with socketserver.TCPServer((HOST, PORT), HealthHandler) as httpd:
+        print(f"HTTP health endpoint running on http://{HOST}:{PORT}/health")
+        httpd.serve_forever()
+
 
 # ───────────────────────────────────────────────
 # Logging helpers
@@ -32,7 +65,6 @@ def log_disconnect(username: str, connected_at: datetime, reason: str = "normal"
     duration = now - connected_at
     seconds = int(duration.total_seconds())
     duration_str = str(timedelta(seconds=seconds))
-
     ts = now.strftime("%Y-%m-%d %H:%M:%S UTC")
     print(
         f"[{ts}] DISCONNECT user={username} "
@@ -48,10 +80,8 @@ def log_disconnect(username: str, connected_at: datetime, reason: str = "normal"
 connected_clients = {}       # websocket → username
 admin_sessions = set()
 usernames = set()
-message_history = {}         # msg_id → dict
-
-# We'll also keep track of connection start time
-connection_times = {}        # websocket → datetime.utcnow() when connected
+message_history = {}
+connection_times = {}
 
 
 # ───────────────────────────────────────────────
@@ -114,7 +144,6 @@ def cleanup(websocket):
         usernames.discard(username)
         admin_sessions.discard(websocket)
 
-        # Log disconnect
         connected_at = connection_times.pop(websocket, None)
         if connected_at:
             log_disconnect(username, connected_at)
@@ -157,10 +186,10 @@ def authenticate(headers):
 
 
 # ───────────────────────────────────────────────
-# Handler
+# WebSocket handler
 # ───────────────────────────────────────────────
 
-async def handler(websocket):
+async def ws_handler(websocket):
     username, error = authenticate(websocket.request_headers)
 
     if error:
@@ -174,9 +203,7 @@ async def handler(websocket):
         await websocket.close(1008, "Username in use")
         return
 
-    # Success → record connection time
     connection_times[websocket] = datetime.utcnow()
-
     connected_clients[websocket] = username
     usernames.add(username)
 
@@ -187,7 +214,6 @@ async def handler(websocket):
     ))
     await broadcast(system_msg(f"{username} has joined the chat"))
 
-    # ─── Message loop ────────────────────────────────────────
     try:
         async for message in websocket:
             text = message.strip()
@@ -236,7 +262,6 @@ async def handler(websocket):
                 await websocket.send(system_msg("Unknown command — try /help"))
                 continue
 
-            # Admin auth attempt
             if text.startswith("AUTH ADMIN "):
                 provided = text[11:].strip()
                 if provided == ADMIN_PASSWORD:
@@ -248,7 +273,6 @@ async def handler(websocket):
                     await websocket.send(system_msg("Incorrect admin password"))
                 continue
 
-            # Normal message
             msg_id = uuid.uuid4().hex[:8]
             payload = chat_msg(username, text, msg_id)
 
@@ -261,11 +285,10 @@ async def handler(websocket):
             await broadcast(payload)
 
     except websockets.exceptions.ConnectionClosed as e:
-        # We can try to log more specific reason here
         reason = "closed by client" if e.code == 1000 else f"closed (code {e.code})"
         cleanup(websocket)
     except Exception as e:
-        log_attempt("ERROR", username=username, detail=f"unexpected error in handler - {str(e)}")
+        log_attempt("ERROR", username=username, detail=f"unexpected error - {str(e)}")
         cleanup(websocket)
     finally:
         cleanup(websocket)
@@ -276,18 +299,24 @@ async def handler(websocket):
 # ───────────────────────────────────────────────
 
 async def main():
-    print(f"Chat server starting on ws://{HOST}:{PORT}")
+    print(f"Starting chat server on ws://{HOST}:{PORT}")
     print(f"Shared chat password  :  {CHAT_PASS}")
     print(f"Admin password        :  {ADMIN_PASSWORD}")
+    print("HTTP health checks enabled → should reduce probe noise in Render logs")
 
+    # Start dummy HTTP server in background thread
+    http_thread = Thread(target=run_http_health_server, daemon=True)
+    http_thread.start()
+
+    # Start WebSocket server
     async with websockets.serve(
-        handler,
+        ws_handler,
         HOST,
         PORT,
         ping_interval=20,
         ping_timeout=60
     ):
-        await asyncio.Future()
+        await asyncio.Future()  # run forever
 
 
 if __name__ == "__main__":
