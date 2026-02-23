@@ -20,23 +20,12 @@ BANNER = r"""
 
                 WebSocket Chat Server
 ──────────────────────────────────────────────────────────
-
-HOW IT WORKS:
-• Clients connect using WebSocket.
-• Basic Auth required (username + CHAT_PASS).
-• Messages are broadcast to all users.
-• Admins can moderate chat.
-
-USER COMMANDS:
+• Basic Auth required (username + CHAT_PASS)
+• AUTH ADMIN <password> to become admin
 • /help
 • /users
-• AUTH ADMIN <password>
-
-ADMIN COMMANDS:
-• /delete <msg_id>
-• /clear_chat
-
-Health:
+• /delete <msg_id>  (admin)
+• /clear_chat       (admin)
 • GET /health
 ──────────────────────────────────────────────────────────
 """
@@ -48,7 +37,7 @@ Health:
 CHAT_PASS = os.environ.get("CHAT_PASS", "default-insecure-123-change-me")
 ADMIN_PASSWORD = os.environ.get("CHAT_ADMIN_PASS", "admin-secret-2025")
 
-PORT = int(os.environ.get("PORT", 10000))
+PORT = int(os.environ.get("PORT", 8765))
 HOST = "0.0.0.0"
 
 # ───────────────────────────────────────────────
@@ -62,17 +51,12 @@ def log_attempt(event_type: str, username: str = None, detail: str = None):
     print(f"[{ts}] LOGIN {event_type.upper()}{user_part}{detail_part}")
 
 
-def log_disconnect(username: str, connected_at: datetime, reason: str = "normal"):
+def log_disconnect(username: str, connected_at: datetime):
     now = datetime.utcnow()
     duration = now - connected_at
     seconds = int(duration.total_seconds())
-    duration_str = str(timedelta(seconds=seconds))
     ts = now.strftime("%Y-%m-%d %H:%M:%S UTC")
-    print(
-        f"[{ts}] DISCONNECT user={username} "
-        f"duration={duration_str} ({seconds}s) "
-        f"reason={reason}"
-    )
+    print(f"[{ts}] DISCONNECT user={username} duration={seconds}s")
 
 # ───────────────────────────────────────────────
 # Global state
@@ -131,7 +115,10 @@ async def broadcast(message, exclude=None):
             continue
         try:
             await ws.send(message)
-        except websockets.exceptions.ConnectionClosed:
+        except (
+            websockets.exceptions.ConnectionClosedOK,
+            websockets.exceptions.ConnectionClosedError
+        ):
             dead.append(ws)
 
     for ws in dead:
@@ -159,7 +146,6 @@ def cleanup(websocket):
 def authenticate(headers):
     auth = headers.get("Authorization", "")
     if not auth.startswith("Basic "):
-        log_attempt("FAILED", detail="missing Authorization")
         return None, "Missing Authorization header"
 
     try:
@@ -168,14 +154,11 @@ def authenticate(headers):
         username, provided_pass = decoded.split(":", 1)
 
         if provided_pass.strip() != CHAT_PASS:
-            log_attempt("FAILED", username=username, detail="wrong password")
             return None, "Incorrect password"
 
-        log_attempt("SUCCESS", username=username)
         return username.strip(), None
 
-    except Exception as e:
-        log_attempt("FAILED", detail=str(e))
+    except Exception:
         return None, "Invalid credentials format"
 
 # ───────────────────────────────────────────────
@@ -191,7 +174,7 @@ async def ws_handler(websocket, path):
         return
 
     if username in usernames:
-        await websocket.send(system_msg(f"Username '{username}' is taken"))
+        await websocket.send(system_msg("Username already taken"))
         await websocket.close(1008, "Username in use")
         return
 
@@ -208,6 +191,7 @@ async def ws_handler(websocket, path):
             if not text:
                 continue
 
+            # Admin login
             if text.startswith("AUTH ADMIN "):
                 provided = text[11:].strip()
                 if provided == ADMIN_PASSWORD:
@@ -217,18 +201,23 @@ async def ws_handler(websocket, path):
                     await websocket.send(system_msg("Incorrect admin password"))
                 continue
 
+            # Commands
+            if text == "/users":
+                await websocket.send(
+                    system_msg(f"Online: {', '.join(sorted(usernames))}")
+                )
+                continue
+
             msg_id = uuid.uuid4().hex[:8]
             payload = chat_msg(username, text, msg_id)
 
-            message_history[msg_id] = {
-                "username": username,
-                "content": text,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
-            }
-
+            message_history[msg_id] = payload
             await broadcast(payload)
 
-    except websockets.exceptions.ConnectionClosed:
+    except (
+        websockets.exceptions.ConnectionClosedOK,
+        websockets.exceptions.ConnectionClosedError
+    ):
         pass
 
     except Exception as e:
@@ -238,7 +227,7 @@ async def ws_handler(websocket, path):
         cleanup(websocket)
 
 # ───────────────────────────────────────────────
-# HTTP handler (compatible with old versions)
+# HTTP handler (old version compatible)
 # ───────────────────────────────────────────────
 
 async def process_http_request(path, request_headers):
