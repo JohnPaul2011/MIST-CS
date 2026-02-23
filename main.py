@@ -37,7 +37,7 @@ BANNER = r"""
 CHAT_PASS = os.environ.get("CHAT_PASS", "default-insecure-123-change-me")
 ADMIN_PASSWORD = os.environ.get("CHAT_ADMIN_PASS", "admin-secret-2025")
 
-PORT = int(os.environ.get("PORT", 8765))
+PORT = int(os.environ.get("PORT", 10000))
 HOST = "0.0.0.0"
 
 # ───────────────────────────────────────────────
@@ -281,3 +281,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nServer stopped")
+
