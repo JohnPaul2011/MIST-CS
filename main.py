@@ -65,7 +65,7 @@ def log_disconnect(username: str, connected_at: datetime):
 connected_clients = {}          # ws → username
 admin_sessions = set()
 usernames = set()
-message_history = []            # list of dict payloads
+message_history = []            # list of dicts
 connection_times = {}
 
 # ───────────────────────────────────────────────
@@ -105,7 +105,7 @@ def clear_all_announcement():
     })
 
 # ───────────────────────────────────────────────
-# Helpers
+# Broadcast & cleanup
 # ───────────────────────────────────────────────
 
 async def broadcast(message: str, exclude=None):
@@ -117,7 +117,6 @@ async def broadcast(message: str, exclude=None):
             await ws.send_str(message)
         except Exception:
             dead.append(ws)
-
     for ws in dead:
         await cleanup(ws)
 
@@ -125,18 +124,18 @@ async def broadcast(message: str, exclude=None):
 async def cleanup(websocket):
     if websocket not in connected_clients:
         return
-
     username = connected_clients.pop(websocket, None)
     if username:
         usernames.discard(username)
         admin_sessions.discard(websocket)
-
         connected_at = connection_times.pop(websocket, None)
         if connected_at:
             log_disconnect(username, connected_at)
-
         await broadcast(system_msg(f"{username} has left the chat."))
 
+# ───────────────────────────────────────────────
+# Authentication
+# ───────────────────────────────────────────────
 
 def authenticate(headers):
     auth = headers.get("Authorization", "")
@@ -155,6 +154,63 @@ def authenticate(headers):
 
     except Exception:
         return None, "Invalid credentials format"
+
+# ───────────────────────────────────────────────
+# Root handler – shows instructions when accessed via browser (https)
+# ───────────────────────────────────────────────
+
+HELP_TEXT = r"""
+   ____ _           _     ____                 
+  / ___| |__   __ _| |_  / ___|  ___ _ ____   _____ _ __ 
+ | |   | '_ \ / _` | __| \___ \ / _ \ '__\ \ / / _ \ '__|
+ | |___| | | | (_| | |_   ___) |  __/ |   \ V /  __/ |   
+  \____|_| |_|\__,_|\__| |____/ \___|_|    \_/ \___|_|   
+
+                WebSocket Chat Server
+──────────────────────────────────────────────────────────
+
+This is NOT a regular website — you cannot open this link directly 
+in your browser address bar[](https://...).
+
+To connect and chat, you must use a **WebSocket connection**:
+
+          wss://YOUR-DOMAIN.onrender.com/
+                 ↑↑↑ use wss:// not https://
+
+Examples:
+
+JavaScript (browser):
+    const ws = new WebSocket("wss://your-app-name.onrender.com/");
+
+Command line (testing):
+    wscat -c wss://your-app-name.onrender.com/
+    (npm install -g wscat)
+
+Authentication:
+You need to send Basic Auth in the connection headers:
+    Authorization: Basic <base64("username:YOUR_CHAT_PASS")>
+
+Commands (after connecting):
+    /users
+    AUTH ADMIN <admin-password>     ← become admin
+    /delete <msg_id>                ← admin only
+    /clear_chat                     ← admin only
+
+Enjoy chatting — but remember: wss:// not https:// !
+──────────────────────────────────────────────────────────
+"""
+
+async def root_handler(request):
+    # If this is a WebSocket upgrade request → pass to websocket handler
+    if "Upgrade" in request.headers and request.headers["Upgrade"].lower() == "websocket":
+        return await websocket_handler(request)
+
+    # Otherwise (normal browser GET) → show helpful text
+    return web.Response(
+        text=HELP_TEXT,
+        content_type="text/plain",
+        status=200
+    )
 
 # ───────────────────────────────────────────────
 # WebSocket handler
@@ -188,7 +244,7 @@ async def websocket_handler(request):
     await ws.send_str(system_msg(f"Welcome, {username}!"))
     await broadcast(system_msg(f"{username} joined the chat"))
 
-    # Send history to new client
+    # Send history
     for msg in message_history:
         await ws.send_json(msg)
 
@@ -201,7 +257,6 @@ async def websocket_handler(request):
             if not text:
                 continue
 
-            # ─── Admin commands ───────────────────────────────────────
             if text.startswith("AUTH ADMIN "):
                 provided = text[11:].strip()
                 if provided == ADMIN_PASSWORD:
@@ -255,7 +310,7 @@ async def websocket_handler(request):
                     await ws.send_str(system_msg(f"Deleted message(s) starting with {target_prefix}"))
                     await broadcast(system_msg(f"Message(s) {target_prefix}… deleted by admin"))
                 else:
-                    await ws.send_str(system_msg(f"No message found with ID: {target_prefix}"))
+                    await ws.send_str(system_msg(f"No message found with ID starting: {target_prefix}"))
                 continue
 
             # Normal message
@@ -273,18 +328,15 @@ async def websocket_handler(request):
 
     return ws
 
-
 # ───────────────────────────────────────────────
-# Health check endpoint
+# Health check
 # ───────────────────────────────────────────────
 
 async def health_handler(request):
     return web.json_response({
         "status": "ok",
-        "connected_clients": len(connected_clients),
-        "uptime": str(datetime.utcnow() - datetime.fromtimestamp(0))
+        "connected_clients": len(connected_clients)
     })
-
 
 # ───────────────────────────────────────────────
 # Server startup
@@ -292,11 +344,11 @@ async def health_handler(request):
 
 async def main():
     print(BANNER)
-    print(f"Starting server →  {HOST}:{PORT}\n")
+    print(f"Starting server on {HOST}:{PORT}\n")
 
     app = web.Application()
+    app.router.add_route("GET", "/", root_handler)
     app.router.add_get("/health", health_handler)
-    app.router.add_get("/", websocket_handler)  # WebSocket lives here
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -315,8 +367,7 @@ async def main():
     loop.add_signal_handler(signal.SIGTERM, shutdown)
     loop.add_signal_handler(signal.SIGINT, shutdown)
 
-    await asyncio.Future()  # run forever
-
+    await asyncio.Future()
 
 if __name__ == "__main__":
     try:
