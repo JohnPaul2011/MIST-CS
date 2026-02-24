@@ -1,1 +1,13 @@
-websockets>=12.0
+aiohttp==3.10.5
+# Optional but recommended for better performance / modern features:
+aiosignal==1.3.1
+frozenlist==1.4.1
+yarl==1.9.4
+multidict==6.0.5
+charset-normalizer==3.3.2
+idna==3.7
+attrs==24.2.0
+
+# If you later want logging improvements or rate limiting:
+# structlog>=24.1.0
+# slowapi>=0.1.9   # (for optional rate limiting)
