@@ -12,13 +12,15 @@ import signal
 # ASCII STARTUP BANNER
 # ───────────────────────────────────────────────
 
-BANNER = r"""
-   ____ _           _     ____                 
-  / ___| |__   __ _| |_  / ___|  ___ _ ____   _____ _ __ 
- | |   | '_ \ / _` | __| \___ \ / _ \ '__\ \ / / _ \ '__|
- | |___| | | | (_| | |_   ___) |  __/ |   \ V /  __/ |   
-  \____|_| |_|\__,_|\__| |____/ \___|_|    \_/ \___|_|   
+TEXT_BANNER = r""" 
+ __    __     __     ______     ______
+/\ "-./  \   /\ \   /\  ___\   /\__  _\
+\ \ \-./\ \  \ \ \  \ \___  \  \/_/\ \/
+ \ \_\ \ \_\  \ \_\  \/\_____\    \ \_\
+  \/_/  \/_/   \/_/   \/_____/     \/_/
+  """
 
+BANNER = TEXT_BANNER + r"""
                 WebSocket Chat Server (aiohttp)
 ──────────────────────────────────────────────────────────
 • Basic Auth required (username + CHAT_PASS)
@@ -159,12 +161,7 @@ def authenticate(headers):
 # Root handler – shows instructions when accessed via browser (https)
 # ───────────────────────────────────────────────
 
-HELP_TEXT = r"""
-   ____ _           _     ____                 
-  / ___| |__   __ _| |_  / ___|  ___ _ ____   _____ _ __ 
- | |   | '_ \ / _` | __| \___ \ / _ \ '__\ \ / / _ \ '__|
- | |___| | | | (_| | |_   ___) |  __/ |   \ V /  __/ |   
-  \____|_| |_|\__,_|\__| |____/ \___|_|    \_/ \___|_|   
+HELP_TEXT = TEXT_BANNER + r"""
 
                 WebSocket Chat Server
 ──────────────────────────────────────────────────────────
@@ -363,9 +360,11 @@ async def main():
         print("\nShutting down...")
         for ws in list(connected_clients):
             asyncio.create_task(ws.close(code=1001, reason="Server shutdown"))
-
-    loop.add_signal_handler(signal.SIGTERM, shutdown)
-    loop.add_signal_handler(signal.SIGINT, shutdown)
+    try:
+        loop.add_signal_handler(signal.SIGTERM, shutdown)
+        loop.add_signal_handler(signal.SIGINT, shutdown)
+    except NotImplementedError:
+        pass
 
     await asyncio.Future()
 
